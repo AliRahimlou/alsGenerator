@@ -75,8 +75,12 @@ def modify_als_file(input_path, target_folder, track_names):
             print(f"❌ Skipping folder '{target_folder}' due to missing ALS template.")
             return
 
-        # Save ALS file as CH1.als inside the bpm-key-track folder
         output_als = os.path.join(target_folder, "CH1.als")
+
+        # **Check if CH1.als already exists**
+        if os.path.exists(output_als):
+            print(f"⏭️ Skipping '{target_folder}' – CH1.als already exists.")
+            return
 
         # Copy the blank ALS to the target folder
         shutil.copy(input_path, output_als)
