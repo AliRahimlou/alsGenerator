@@ -3,11 +3,9 @@ import shutil
 import gzip
 import re
 
-# 🛠 CONFIG: Paths (Can be changed dynamically)
+# 🛠 CONFIG: Paths
 ALS_FILES_FOLDER = "alsFiles"  # Folder where BPM ALS templates are stored
-DEFAULT_FLAC_FOLDER = "/Users/alirahimlou/Desktop/STEMS/separated/htdemucs"
-FLAC_FOLDER = os.getenv("FLAC_FOLDER", DEFAULT_FLAC_FOLDER)  # Allow environment override
-SKIP_EXISTING = True  # 🔄 Set to False to overwrite CH1.als if it already exists
+FLAC_FOLDER = "/Users/alirahimlou/Desktop/test-music"
 
 def find_flac_folders(directory):
     """
@@ -18,7 +16,11 @@ def find_flac_folders(directory):
     for root, dirs, files in os.walk(directory):
         flac_files = sorted([f for f in files if f.lower().endswith(".flac")])
         if flac_files:
-            track_names = {"drums": None, "Inst": None, "vocals": None}
+            track_names = {
+                "drums": None,
+                "Inst": None,
+                "vocals": None
+            }
             for f in flac_files:
                 rel_path = os.path.relpath(os.path.join(root, f), directory)  # Compute **relative** path
                 if "drums" in f.lower() and track_names["drums"] is None:
@@ -38,37 +40,30 @@ def find_flac_folders(directory):
 def extract_bpm_from_path(folder_path):
     """
     Extracts the BPM from the folder structure.
-    The BPM is assumed to be any numeric value (70-200) found in the path.
+    The BPM is assumed to be the first-level folder name inside `test-music`.
+    Example:
+        /Users/.../test-music/80/5A/TrackName -> BPM = 80
+        /Users/.../test-music/120/7B/TrackName -> BPM = 120
     """
-    bpm_match = re.search(r"/(\d{2,3})/", folder_path)  # Find first 2-3 digit number in path
-    if bpm_match:
-        bpm = int(bpm_match.group(1))  # Convert to integer
-        if 70 <= bpm <= 200:  # Ensure it's a valid BPM
-            print(f"📌 Extracted BPM: {bpm} from {folder_path}")  # Debugging info
-            return str(bpm)  # Convert to string for ALS matching
-    
-    print(f"⚠️ No valid BPM found in {folder_path}")  # Debugging info
-    return None  # No BPM found
+    parts = folder_path.split(os.sep)  # Split path by directory levels
+    try:
+        bpm_value = int(parts[-3])  # Extract the BPM folder name (third level from the end)
+        return str(bpm_value)  # Return as a string to match ALS filenames
+    except (IndexError, ValueError):
+        return None  # If extraction fails, return None
 
 def select_blank_als(bpm_value):
     """
     Dynamically selects the correct blank ALS file based on BPM value.
-    If no exact match is found, print a warning and return a default ALS.
+    If no exact match is found, print a warning and return None.
     """
     if bpm_value:
         bpm_als_path = os.path.join(ALS_FILES_FOLDER, f"{bpm_value}.als")
         if os.path.exists(bpm_als_path):
-            print(f"✅ Found ALS template for BPM {bpm_value}: {bpm_als_path}")  # Debugging info
             return bpm_als_path  # Exact match found
     
-    # Use a fallback ALS template
-    default_als = os.path.join(ALS_FILES_FOLDER, "default.als")
-    if os.path.exists(default_als):
-        print(f"⚠️ Warning: No ALS file found for BPM {bpm_value}. Using default ALS.")
-        return default_als
-    
-    print(f"❌ No ALS file available for BPM {bpm_value}. Skipping...")
-    return None  # Return None if no ALS template exists
+    print(f"⚠️ Warning: No ALS file found for BPM {bpm_value}. Skipping...")
+    return None  # Return None if no ALS template exists for this BPM
 
 def modify_als_file(input_path, target_folder, track_names):
     """
@@ -82,8 +77,8 @@ def modify_als_file(input_path, target_folder, track_names):
 
         output_als = os.path.join(target_folder, "CH1.als")
 
-        # **Check if CH1.als already exists and skip if enabled**
-        if SKIP_EXISTING and os.path.exists(output_als):
+        # **Check if CH1.als already exists**
+        if os.path.exists(output_als):
             print(f"⏭️ Skipping '{target_folder}' – CH1.als already exists.")
             return
 
@@ -116,7 +111,7 @@ def modify_als_file(input_path, target_folder, track_names):
                 als_str = als_str.replace(f"{target_folder}/{old}", f"{target_folder}/{new}")  # Fix absolute paths
                 als_str = als_str.replace(old.replace(" ", "%20"), new.replace(" ", "%20"))  # Fix URL encoding
 
-        # Fix display names in the ALS
+        # Fix display names in the ALS (MemorizedFirstClipName, UserName, Name, EffectiveName)
         for old, new in replacements.items():
             if new:
                 old_track_name = old.replace(".flac", "")
@@ -137,11 +132,17 @@ def modify_als_file(input_path, target_folder, track_names):
         print(f"❌ Error modifying ALS in folder '{target_folder}': {e}")
 
 if __name__ == "__main__":
+    # Find all folders under FLAC_FOLDER that contain at least one relevant FLAC file.
     folders = find_flac_folders(FLAC_FOLDER)
     if not folders:
         print("❌ No relevant FLAC files found in any folder!")
     else:
         for folder, track_names, bpm_value in folders:
+            # Dynamically select the correct ALS template based on BPM
             blank_als_path = select_blank_als(bpm_value)
+            print(f"🎯 Processing folder: {folder} (BPM: {bpm_value or 'Unknown'})")
+            print(f"   Using ALS template: {blank_als_path if blank_als_path else '⚠️ Skipping (No ALS file)'}")
+            print("   Found track files:", track_names)
+
             modify_als_file(blank_als_path, folder, track_names)
         print("🎵 All ALS files generated successfully!")
