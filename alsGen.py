@@ -5,7 +5,7 @@ import re
 
 # 🛠 CONFIG: Paths
 ALS_FILES_FOLDER = "alsFiles"  # Folder where BPM ALS templates are stored
-FLAC_FOLDER = "/Users/alirahimlou/Desktop/test-music"
+FLAC_FOLDER = "/Users/alirahimlou/Desktop/STEMS"
 
 # ✅ CONFIG: Skip or overwrite existing ALS files
 SKIP_EXISTING = True  # Set to False if you want to overwrite existing ALS files
@@ -43,10 +43,10 @@ def find_flac_folders(directory):
 def extract_bpm_from_path(folder_path):
     """
     Extracts the BPM from the folder structure.
-    The BPM is assumed to be the first-level folder name inside `test-music`.
+    The BPM is assumed to be the first-level folder name inside `STEMS`.
     Example:
-        /Users/.../test-music/80/5A/TrackName -> BPM = 80
-        /Users/.../test-music/120/7B/TrackName -> BPM = 120
+        /Users/.../STEMS/80/5A/TrackName -> BPM = 80
+        /Users/.../STEMS/120/7B/TrackName -> BPM = 120
     """
     parts = folder_path.split(os.sep)  # Split path by directory levels
     try:
