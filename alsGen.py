@@ -11,7 +11,7 @@ ALS_FILES_FOLDER = "alsFiles"  # Folder where BPM ALS templates are stored
 FLAC_FOLDER = "/Users/alirahimlou/Desktop/STEMS"
 
 # ✅ CONFIG: Skip or overwrite existing ALS files
-SKIP_EXISTING = False  # Set to False if you want to overwrite existing ALS files
+SKIP_EXISTING = True  # Set to False if you want to overwrite existing ALS files
 
 def find_flac_folders(directory):
     """
