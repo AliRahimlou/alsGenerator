@@ -2,153 +2,189 @@ import os
 import shutil
 import gzip
 import re
+import xml.etree.ElementTree as ET
+from io import BytesIO
+import trackTime  # Import the trackTime module
 
 # 🛠 CONFIG: Paths
-ALS_FILES_FOLDER = "alsFiles"
+ALS_FILES_FOLDER = "alsFiles"  # Folder where BPM ALS templates are stored
 FLAC_FOLDER = "/Users/alirahimlou/Desktop/STEMS"
 
 # ✅ CONFIG: Skip or overwrite existing ALS files
-SKIP_EXISTING = True
+SKIP_EXISTING = True  # Set to False if you want to overwrite existing ALS files
 
 def find_flac_folders(directory):
+    """
+    Recursively search for folders in `directory` that contain .flac files.
+    Returns a list of tuples: (folder_path, track_names, bpm_value).
+    """
     results = []
     for root, dirs, files in os.walk(directory):
         flac_files = sorted([f for f in files if f.lower().endswith(".flac")])
         if flac_files:
-            track_names = {"drums": None, "Inst": None, "vocals": None}
+            track_names = {
+                "drums": None,
+                "Inst": None,
+                "vocals": None
+            }
             for f in flac_files:
-                rel_path = os.path.relpath(os.path.join(root, f), directory)
-                abs_path = os.path.join(root, f)
+                rel_path = os.path.relpath(os.path.join(root, f), directory)  # Compute relative path
                 if "drums" in f.lower() and track_names["drums"] is None:
-                    track_names["drums"] = (rel_path, abs_path)
+                    track_names["drums"] = rel_path
                 elif "inst" in f.lower() and track_names["Inst"] is None:
-                    track_names["Inst"] = (rel_path, abs_path)
+                    track_names["Inst"] = rel_path
                 elif "vocals" in f.lower() and track_names["vocals"] is None:
-                    track_names["vocals"] = (rel_path, abs_path)
+                    track_names["vocals"] = rel_path
             
-            bpm_value, key_value, track_name = extract_metadata_from_path(root)
+            bpm_value = extract_bpm_from_path(root)
             if any(track_names.values()):
-                results.append((root, track_names, bpm_value, key_value, track_name))
+                results.append((root, track_names, bpm_value))
     return results
 
-def extract_metadata_from_path(folder_path):
+def extract_bpm_from_path(folder_path):
+    """
+    Extracts the BPM from the folder structure.
+    Example: /Users/.../STEMS/133/5A/TrackName -> BPM = 133
+    """
     parts = folder_path.split(os.sep)
     try:
-        bpm_value = parts[-3]
-        key_value = parts[-2]
-        track_name = parts[-1]
-        int(bpm_value)
-        return bpm_value, key_value, track_name
+        bpm_value = int(parts[-3])  # Extract BPM from third level from the end
+        return bpm_value
     except (IndexError, ValueError):
-        return None, None, None
+        print(f"   Warning: Could not extract BPM from path '{folder_path}'. Using default BPM.")
+        return None
 
 def select_blank_als(bpm_value):
+    """
+    Dynamically selects the correct blank ALS file based on BPM value.
+    """
     if bpm_value:
         bpm_als_path = os.path.join(ALS_FILES_FOLDER, f"{bpm_value}.als")
         if os.path.exists(bpm_als_path):
             return bpm_als_path
+    print(f"⚠️ Warning: No ALS file found for BPM {bpm_value}. Skipping...")
     return None
 
-def get_template_flac_names(als_path):
-    if not als_path:
-        return []
-    with gzip.open(als_path, "rb") as f:
-        als_data = f.read()
-    als_str = als_data.decode("latin1")
-    flac_paths = re.findall(r'["\'](.*?\.flac)["\']', als_str)
-    return flac_paths
+def get_longest_duration_in_beats(track_names, base_folder, bpm):
+    """
+    Scans all FLAC files in track_names, finds the longest duration,
+    and converts it to beats using the provided BPM.
+    """
+    durations = {}
+    for track_type, rel_path in track_names.items():
+        if rel_path:
+            flac_path = os.path.join(base_folder, rel_path)
+            try:
+                duration_seconds = trackTime.get_track_duration(flac_path)
+                durations[track_type] = duration_seconds
+                print(f"   {track_type.capitalize()} Duration: {duration_seconds:.2f} seconds")
+            except Exception as e:
+                print(f"   Error getting duration for {track_type}: {e}")
 
-def modify_als_file(input_path, target_folder, track_names, track_name):
-    if input_path is None:
-        return
+    if not durations:
+        print("   No valid durations found for any tracks.")
+        return None
 
-    output_als = os.path.join(target_folder, "CH1.als")
-    if os.path.exists(output_als) and SKIP_EXISTING:
-        return
+    longest_track = max(durations, key=durations.get)
+    longest_duration_seconds = durations[longest_track]
+    duration_beats = (longest_duration_seconds * bpm) / 60
+    print(f"   Longest track: {longest_track.capitalize()} ({longest_duration_seconds:.2f} seconds)")
+    print(f"   Converted to {bpm} BPM: {duration_beats:.6f} beats")
+    return f"{duration_beats:.6f}"
 
-    print(f"🔍 Processing new ALS for: {target_folder} (Track: {track_name})")
-    shutil.copy(input_path, output_als)
-    with gzip.open(output_als, "rb") as f:
-        als_data = f.read()
-    als_str = als_data.decode("latin1")
+def modify_als_file(input_path, target_folder, track_names, bpm_value):
+    """
+    Loads the selected ALS file, replaces FLAC references, updates <LoopEnd> and <OutMarker> with the longest track duration,
+    and saves the ALS as "CH1.als" in the target folder.
+    """
+    try:
+        if input_path is None:
+            print(f"❌ Skipping folder '{target_folder}' due to missing ALS template.")
+            return
 
-    flac_idx = als_str.find(".flac")
-    flac_context_before = als_str[flac_idx-100:flac_idx+100] if flac_idx != -1 else "No .flac found"
-    print(f"🔍 ALS context (before): {flac_context_before}")
+        output_als = os.path.join(target_folder, "CH1.als")
 
-    template_flac_names = get_template_flac_names(input_path)
-    print(f"🔍 Template FLACs: {template_flac_names}")
-    print(f"🔍 Detected track files: { {k: v[0] for k, v in track_names.items() if v} }")
+        if os.path.exists(output_als) and SKIP_EXISTING:
+            print(f"⏭️ Skipping '{target_folder}' – CH1.als already exists.")
+            return
 
-    # Map template FLACs to new paths
-    replacements = {}
-    for old_flac in template_flac_names:
-        stem_type = None
-        old_flac_lower = old_flac.lower()
-        if "drums" in old_flac_lower:
-            stem_type = "drums"
-        elif "inst" in old_flac_lower:
-            stem_type = "Inst"
-        elif "vocals" in old_flac_lower:
-            stem_type = "vocals"
-        if stem_type and track_names[stem_type]:
-            rel_path, abs_path = track_names[stem_type]
-            new_path = os.path.basename(abs_path)  # e.g., drums-Vin Jay - Drop.flac
-            if os.path.exists(abs_path):
-                replacements[old_flac] = new_path
-            else:
-                print(f"⚠️ FLAC file not found: {abs_path}")
-    print(f"🔍 Replacements: {replacements}")
+        shutil.copy(input_path, output_als)
 
-    # Perform replacements
-    for old, new in replacements.items():
-        if new:
-            print(f"🔍 Replacing FLAC path '{old}' with '{new}'")
-            als_str = als_str.replace(old, new)
-            als_str = als_str.replace(f"../{old}", f"../{new}")
-            als_str = als_str.replace(old.replace(" ", "%20"), new.replace(" ", "%20"))
+        # Get the longest duration in beats
+        new_loop_end = None
+        if bpm_value:
+            new_loop_end = get_longest_duration_in_beats(track_names, FLAC_FOLDER, bpm_value)
+        else:
+            print("   No BPM value available; skipping LoopEnd modification.")
 
-            # 1-to-1 replacement for display names
-            old_name = old_flac.split('/')[-1].replace('.flac', '')  # e.g., drums-Tape B - i won't be ur drug
-            new_name = new.replace('.flac', '')  # e.g., drums-Vin Jay - Drop
-            print(f"🔍 Updating display name: '{old_name}' -> '{new_name}'")
-            als_str = re.sub(rf'(<MemorizedFirstClipName Value="){re.escape(old_name)}(")', rf'\1{new_name}\2', als_str)
-            als_str = re.sub(rf'(<UserName Value="){re.escape(old_name)}(")', rf'\1{new_name}\2', als_str)
-            als_str = re.sub(rf'(<Name Value="){re.escape(old_name)}(")', rf'\1{new_name}\2', als_str)
-            als_str = re.sub(rf'(<EffectiveName Value="){re.escape(old_name)}(")', rf'\1{new_name}\2', als_str)
+        # Modify the ALS file using XML parsing
+        with gzip.open(output_als, "rb") as f:
+            als_data = f.read()
 
-    remaining_flacs = re.findall(r'["\'](.*?\.flac)["\']', als_str)
-    print(f"🔍 Remaining FLACs after replacement: {remaining_flacs}")
+        tree = ET.parse(BytesIO(als_data))
+        root = tree.getroot()
 
-    flac_idx = als_str.find(".flac")
-    flac_context_after = als_str[flac_idx-100:flac_idx+100] if flac_idx != -1 else "No .flac found"
-    print(f"🔍 ALS context (after): {flac_context_after}")
+        modified_count = 0
+        if new_loop_end:
+            # Update all <LoopEnd> and <OutMarker> tags
+            for elem in root.iter():
+                if elem.tag == "LoopEnd":
+                    old_value = elem.get("Value")
+                    elem.set("Value", new_loop_end)
+                    modified_count += 1
+                    print(f"   Updated <LoopEnd> from {old_value} to {new_loop_end}")
+                elif elem.tag == "OutMarker":
+                    old_value = elem.get("Value")
+                    elem.set("Value", new_loop_end)
+                    print(f"   Updated <OutMarker> from {old_value} to {new_loop_end}")
 
-    modified_data = als_str.encode("latin1")
-    with gzip.open(output_als, "wb") as f:
-        f.write(modified_data)
-    print(f"✅ Saved new ALS: {output_als}")
+        with gzip.open(output_als, "wb") as f_out:
+            tree.write(f_out, encoding="utf-8", xml_declaration=True)
 
-    # Check and clean up .asd files
-    asd_files = [f for f in os.listdir(target_folder) if f.endswith('.asd')]
-    if asd_files:
-        print(f"🔍 Found existing .asd files: {asd_files}")
-        print(f"ℹ️ Clearing old .asd files to ensure fresh analysis...")
-        for asd in asd_files:
-            os.remove(os.path.join(target_folder, asd))
-        print(f"ℹ️ To stop re-analyzing:\n"
-              f"  1. Open {output_als} in Ableton.\n"
-              f"  2. Save the project (File > Save Live Set).\n"
-              f"  3. Reopen to confirm analysis persists.")
-    else:
-        print(f"ℹ️ No .asd files found. Open and save in Ableton to generate them.")
+        # FLAC reference replacements
+        with gzip.open(output_als, "rb") as f:
+            als_data = f.read()
+        als_str = als_data.decode("latin1")
+
+        replacements = {
+            "drums-Tape B - i won't be ur drug.flac": track_names["drums"] if track_names["drums"] else "",
+            "Inst-Tape B - i won't be ur drug.flac": track_names["Inst"] if track_names["Inst"] else "",
+            "vocals-Tape B - i won't be ur drug.flac": track_names["vocals"] if track_names["vocals"] else "",
+        }
+
+        for old, new in replacements.items():
+            if new:
+                als_str = als_str.replace(old, new)
+                als_str = als_str.replace(f"../{old}", f"../{new}")
+                als_str = als_str.replace(f"{target_folder}/{old}", f"{target_folder}/{new}")
+                als_str = als_str.replace(old.replace(" ", "%20"), new.replace(" ", "%20"))
+
+        for old, new in replacements.items():
+            if new:
+                old_track_name = old.replace(".flac", "")
+                new_track_name = os.path.basename(new).replace(".flac", "")
+                als_str = re.sub(rf'(<MemorizedFirstClipName Value="){re.escape(old_track_name)}(")', rf'\1{new_track_name}\2', als_str)
+                als_str = re.sub(rf'(<UserName Value="){re.escape(old_track_name)}(")', rf'\1{new_track_name}\2', als_str)
+                als_str = re.sub(rf'(<Name Value="){re.escape(old_track_name)}(")', rf'\1{new_track_name}\2', als_str)
+                als_str = re.sub(rf'(<EffectiveName Value="){re.escape(old_track_name)}(")', rf'\1{new_track_name}\2', als_str)
+
+        with gzip.open(output_als, "wb") as f:
+            f.write(als_str.encode("latin1"))
+
+        print(f"✅ Final modified ALS saved at: {output_als} (Modified {modified_count} LoopEnd elements)\n")
+
+    except Exception as e:
+        print(f"❌ Error modifying ALS in folder '{target_folder}': {e}")
 
 if __name__ == "__main__":
     folders = find_flac_folders(FLAC_FOLDER)
     if not folders:
-        print("❌ No relevant FLAC files found!")
+        print("❌ No relevant FLAC files found in any folder!")
     else:
-        for folder, track_names, bpm_value, key_value, track_name in folders:
+        for folder, track_names, bpm_value in folders:
             blank_als_path = select_blank_als(bpm_value)
-            modify_als_file(blank_als_path, folder, track_names, track_name)
-        print("🎵 All ALS files processed!")
+            print(f"🎯 Processing folder: {folder} (BPM: {bpm_value or 'Unknown'})")
+            print(f"   Using ALS template: {blank_als_path if blank_als_path else '⚠️ Skipping (No ALS file)'}")
+            print("   Found track files:", track_names)
+            modify_als_file(blank_als_path, folder, track_names, bpm_value)
+        print("🎵 All ALS files generated successfully!")
